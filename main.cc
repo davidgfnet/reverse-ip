@@ -34,16 +34,17 @@ int main(int argc, char ** argv) {
 	if (argc < 4) {
 		fprintf(stderr, "Usage: %s command (args...)\n", argv[0]);
 		fprintf(stderr, " Commands:\n");
-		fprintf(stderr, "  * generatedb domains.gz /tmppath/ out-file.db bw(kbps)\n");
+		fprintf(stderr, "  * crawl domains.gz /tmppath/ out-file.db bw(kbps)\n");
+		fprintf(stderr, "  * generatedb /tmppath/ out-file.db\n");
 		exit(0);
 	}
 
 	std::string command = std::string(argv[1]);
 
-	if (command == "generatedb") {
-		std::string domfile = std::string(argv[2]);
+	if (command == "crawl") {
 		outpath = std::string(argv[3]);
 		std::string outdb = std::string(argv[4]);
+		std::string domfile = std::string(argv[2]);
 
 		ares_channel channel;
 		int status, addr_family = AF_INET;
@@ -102,6 +103,11 @@ int main(int argc, char ** argv) {
 
 		ares_destroy(channel);
 		ares_library_cleanup();
+	}
+	
+	if (command == "generatedb") {
+		outpath = std::string(argv[2]);
+		std::string outdb = std::string(argv[3]);
 
 		std::cout << "Done! Now building the database..." << std::endl;
 		FILE * fd = fopen(outdb.c_str(),"wb");
@@ -192,11 +198,22 @@ void dbgen(FILE * fd) {
 			}
 			buffer.push_back(0);
 		}
-		while (buffer.size() % ALIGNB != 0)
-			buffer.push_back(0);
+
+		// Compress
+		uLongf outbufsize = buffer.size()*1.15f+1024*1024;
+		Bytef * outputbuf = (Bytef*)malloc(outbufsize);
+		int res = compress2(&outputbuf[8], &outbufsize, (Bytef*)buffer.c_str(), buffer.size(), 9);
+		*((uint32_t*)outputbuf) = outbufsize;
+		*(((uint32_t*)outputbuf)+1) = buffer.size();
+		buffer = "";
+		outbufsize += 8;
+
+		while (outbufsize % ALIGNB != 0)
+			outputbuf[outbufsize++] = 0;
 
 		ttable[(l0<<16)|(l1<<8)|l2] = ftello(fd) >> ALIGNB_LOG2;
-		fwrite(buffer.c_str(), 1, buffer.size(), fd);
+		fwrite(outputbuf, 1, outbufsize, fd);
+		free(outputbuf);
 	}
 	}
 	}
