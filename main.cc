@@ -11,18 +11,20 @@
 #include <signal.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <sstream>
 
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <ares.h>
+#include <kcpolydb.h>
 
-std::string outpath;
+kyotocabinet::PolyDB db;
 
 const char * dns_servers[4] = { "209.244.0.3", "209.244.0.4", "8.8.8.8", "8.8.4.4" };
 struct in_addr dns_servers_addr[4];
 int inflight = 0;
-#define MAX_INFLIGHT 2000
+int MAX_INFLIGHT = 2000;
 
 #define ALIGNB      8
 #define ALIGNB_LOG2 3
@@ -34,7 +36,7 @@ int main(int argc, char ** argv) {
 	if (argc < 4) {
 		fprintf(stderr, "Usage: %s command (args...)\n", argv[0]);
 		fprintf(stderr, " Commands:\n");
-		fprintf(stderr, "  * crawl domains.gz /tmppath/ out-file.db bw(kbps)\n");
+		fprintf(stderr, "  * crawl domains.gz tmpfile.kct max-inflight\n");
 		fprintf(stderr, "  * generatedb /tmppath/ out-file.db\n");
 		exit(0);
 	}
@@ -42,9 +44,14 @@ int main(int argc, char ** argv) {
 	std::string command = std::string(argv[1]);
 
 	if (command == "crawl") {
-		outpath = std::string(argv[3]);
-		std::string outdb = std::string(argv[4]);
+		std::string outpath = std::string(argv[3]);
+		MAX_INFLIGHT = std::stoi(argv[4]);
 		std::string domfile = std::string(argv[2]);
+
+		if (!db.open(outpath, kyotocabinet::PolyDB::OWRITER | kyotocabinet::PolyDB::OCREATE)) {
+			std::cerr << "DB open error: " << db.error().name() << std::endl;
+			exit(1);
+		}
 
 		ares_channel channel;
 		int status, addr_family = AF_INET;
@@ -103,16 +110,24 @@ int main(int argc, char ** argv) {
 
 		ares_destroy(channel);
 		ares_library_cleanup();
+		db.close();
 	}
 	
 	if (command == "generatedb") {
-		outpath = std::string(argv[2]);
+		std::string outpath = std::string(argv[2]);
 		std::string outdb = std::string(argv[3]);
+
+		if (!db.open(outpath, kyotocabinet::PolyDB::OREADER)) {
+			std::cerr << "DB open error: " << db.error().name() << std::endl;
+			exit(1);
+		}
 
 		std::cout << "Done! Now building the database..." << std::endl;
 		FILE * fd = fopen(outdb.c_str(),"wb");
 		dbgen(fd);
 		fclose(fd);
+
+		db.close();
 	}
 }
 
@@ -145,19 +160,20 @@ static void callback(void *arg, int status, int timeouts, struct hostent *host) 
 
 		struct in_addr **addr_list = (struct in_addr **) host->h_addr_list;
 		for(int i = 0; addr_list[i] != NULL; i++) {
-			unsigned long ip = ntohl(addr_list[i]->s_addr);
+			uint32_t ip = (addr_list[i]->s_addr);  // ntohl
 
-			int l0 = (ip >> 24) & 0xFF;
-			int l1 = (ip >> 16) & 0xFF;
-			int l2 = (ip >>  8) & 0xFF;
-			int l3 = (ip >>  0) & 0xFF;
+			kyotocabinet::DB::Cursor* cur = db.cursor();
+			if (!cur->jump((char*)&ip, sizeof(uint32_t))) {
+				db.set((char*)&ip, sizeof(uint32_t), "\0", 1);
+				cur->jump((char*)&ip, sizeof(uint32_t));
+			}
+			std::string key, value;
+			cur->get(&key, &value);
 
-			std::string relpath = outpath + "/" + std::to_string(l0) + "/" + std::to_string(l1);
-			rmkdir(relpath.c_str());
-			std::string fn = relpath + "/" + std::to_string(l2);
-			std::ofstream ofs(fn, std::ofstream::out | std::ofstream::app);
+			value += domain + " ";
+			cur->set_value(value.c_str(), value.size());
 
-			ofs << l3 << " " << domain << std::endl;
+			delete cur;
 		}
 	}
 }
@@ -178,22 +194,24 @@ void dbgen(FILE * fd) {
 	for (int l1 = 0; l1 < 256; l1++) {
 	for (int l2 = 0; l2 < 256; l2++) {
 
-		std::string fn = outpath + "/" + std::to_string(l0) + "/" + std::to_string(l1) + "/" + std::to_string(l2);
 		std::string buffer;
 
-		std::ifstream ifs(fn, std::ifstream::in);
-		if (!ifs.good()) continue;
-
-		std::map <int, std::vector<std::string> > d;
-		std::string domain; int l3;
-		while (ifs >> l3 >> domain) {
-			d[l3].push_back(domain);
-		}
-
 		for (int l3 = 0; l3 < 256; l3++) {
-			const std::vector <std::string> & l = d[l3];
-			for ( auto & s : l ) {
-				buffer += s;
+			uint32_t ip = htonl((l0 << 24) | (l1 << 16) | (l2 << 8) | l3);
+
+			kyotocabinet::DB::Cursor* cursor = db.cursor();
+			if (!cursor->jump((char*)&ip, sizeof(uint32_t))) {
+				delete cursor;
+				continue;
+			}
+			std::string key, value;
+			cursor->get(&key, &value);
+			delete cursor;
+
+			std::istringstream iss(value);
+			std::string domain;
+			while (iss >> domain) {
+				buffer += domain;
 				buffer.push_back(0);
 			}
 			buffer.push_back(0);
