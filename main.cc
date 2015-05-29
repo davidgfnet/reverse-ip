@@ -162,18 +162,11 @@ static void callback(void *arg, int status, int timeouts, struct hostent *host) 
 		for(int i = 0; addr_list[i] != NULL; i++) {
 			uint32_t ip = (addr_list[i]->s_addr);  // ntohl
 
-			kyotocabinet::DB::Cursor* cur = db.cursor();
-			if (!cur->jump((char*)&ip, sizeof(uint32_t))) {
-				db.set((char*)&ip, sizeof(uint32_t), "\0", 1);
-				cur->jump((char*)&ip, sizeof(uint32_t));
-			}
-			std::string key, value;
-			cur->get(&key, &value);
-
+			std::string ipkey((char*)&ip, sizeof(uint32_t)), value;
+			db.get(ipkey, &value);
+			
 			value += domain + " ";
-			cur->set_value(value.c_str(), value.size());
-
-			delete cur;
+			db.set(ipkey, value);
 		}
 	}
 }
