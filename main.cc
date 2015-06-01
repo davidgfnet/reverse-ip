@@ -30,14 +30,16 @@ int MAX_INFLIGHT = 2000;
 #define ALIGNB_LOG2 3
 
 static void callback(void *arg, int status, int timeouts, struct hostent *host);
-void dbgen(FILE * fd);
+void dbgen_fs(std::string outpath, FILE * fd);
+void dbgen_kc(FILE * fd);
 
 int main(int argc, char ** argv) {
 	if (argc < 4) {
 		fprintf(stderr, "Usage: %s command (args...)\n", argv[0]);
 		fprintf(stderr, " Commands:\n");
 		fprintf(stderr, "  * crawl domains.gz tmpfile.kct max-inflight\n");
-		fprintf(stderr, "  * generatedb /tmppath/ out-file.db\n");
+		fprintf(stderr, "  * generatedb-kc tmpfile.kct out-file.db\n");
+		fprintf(stderr, "  * generatedb-fs /tmppath/ out-file.db\n");
 		exit(0);
 	}
 
@@ -113,7 +115,7 @@ int main(int argc, char ** argv) {
 		db.close();
 	}
 	
-	if (command == "generatedb") {
+	if (command == "generatedb-kc") {
 		std::string outpath = std::string(argv[2]);
 		std::string outdb = std::string(argv[3]);
 
@@ -124,11 +126,23 @@ int main(int argc, char ** argv) {
 
 		std::cout << "Done! Now building the database..." << std::endl;
 		FILE * fd = fopen(outdb.c_str(),"wb");
-		dbgen(fd);
+		dbgen_kc(fd);
 		fclose(fd);
 
 		db.close();
 	}
+	if (command == "generatedb-fs") {
+		std::string outpath = std::string(argv[2]);
+		std::string outdb = std::string(argv[3]);
+
+		std::cout << "Done! Now building the database..." << std::endl;
+		FILE * fd = fopen(outdb.c_str(),"wb");
+		dbgen_fs(outpath, fd);
+		fclose(fd);
+
+		db.close();
+	}
+
 }
 
 static void rmkdir(const char *dir) {
@@ -173,7 +187,7 @@ static void callback(void *arg, int status, int timeouts, struct hostent *host) 
 
 uint32_t * ttable = 0;
 
-void dbgen(FILE * fd) {
+void dbgen_kc(FILE * fd) {
 	// Generate the database
 	unsigned int tsize = 256*256*256*sizeof(uint32_t);
 	ttable = (uint32_t*)malloc(tsize);
@@ -235,4 +249,81 @@ void dbgen(FILE * fd) {
 
 	free(ttable);
 }
+
+void dbgen_fs(std::string outpath, FILE * fd) {
+	// Generate the database
+	unsigned int tsize = 256*256*256*sizeof(uint32_t);
+	ttable = (uint32_t*)malloc(tsize);
+	memset(ttable, 0, tsize);
+
+	// Reserve the size for the index and we'll fill it as we go
+	fwrite(ttable, 1, tsize, fd);
+
+	// For each DB level:
+	for (int l0 = 0; l0 < 256; l0++) {
+	for (int l1 = 0; l1 < 256; l1++) {
+	for (int l2 = 0; l2 < 256; l2++) {
+
+		std::string fn = outpath + "/" + std::to_string(l0) + "/" + std::to_string(l1) + "/" + std::to_string(l2);
+		{
+			std::ifstream ifs(fn, std::ifstream::in);
+			if (!ifs.good()) continue;
+		}
+
+		ogzstream tmpfile("/tmp/dbtmpfile.tmp");
+		unsigned int uncsize = 0;
+
+		for (int l3 = 0; l3 < 256; l3++) {
+			std::ifstream ifs(fn, std::ifstream::in);
+			if (!ifs.good()) continue;
+
+			std::string domain; int l3r;
+			while (ifs >> l3r >> domain) {
+				if (l3r != l3) continue;
+				std::string buffer = domain;
+				buffer.push_back(0);
+				tmpfile << buffer;
+				uncsize += buffer.size();
+			}
+			{
+				std::string buffer;
+				buffer.push_back(0);
+				tmpfile << buffer;
+				uncsize++;
+			}
+		}
+		tmpfile.close();
+
+		FILE * tmpf = fopen("/tmp/dbtmpfile.tmp", "rb");
+		fseek(tmpf, 0, SEEK_END);
+		unsigned int compressed_size = ftello(tmpf);
+		fseek(tmpf, 0, SEEK_SET);
+
+		fwrite((char*)&compressed_size, 1, 4, fd);
+		fwrite((char*)&uncsize, 1, 4, fd);
+
+		while (compressed_size > 0) {
+			char tbuf[512*1024];
+			unsigned int tocopy = compressed_size > sizeof(tbuf) ? sizeof(tbuf) : compressed_size;
+			fread (tbuf, 1, tocopy, tmpf);
+			fwrite(tbuf, 1, tocopy, fd);
+
+			compressed_size -= tocopy;
+		}
+		fclose(tmpf);
+		while (ftello(fd) % ALIGNB != 0)
+			fseek(fd, 1, SEEK_CUR);
+
+		ttable[(l0<<16)|(l1<<8)|l2] = ftello(fd) >> ALIGNB_LOG2;
+	}
+	}
+	}
+
+	// Update index
+	fseeko(fd, 0, SEEK_SET);
+	fwrite(ttable, 1, tsize, fd);
+
+	free(ttable);
+}
+
 
