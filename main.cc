@@ -259,6 +259,8 @@ void dbgen_fs(std::string outpath, FILE * fd) {
 	// Reserve the size for the index and we'll fill it as we go
 	fwrite(ttable, 1, tsize, fd);
 
+	uint32_t prevp = ftello(fd) >> ALIGNB_LOG2;
+
 	// For each DB level:
 	for (int l0 = 0; l0 < 256; l0++) {
 	for (int l1 = 0; l1 < 256; l1++) {
@@ -314,7 +316,8 @@ void dbgen_fs(std::string outpath, FILE * fd) {
 		while (ftello(fd) % ALIGNB != 0)
 			fseek(fd, 1, SEEK_CUR);
 
-		ttable[(l0<<16)|(l1<<8)|l2] = ftello(fd) >> ALIGNB_LOG2;
+		ttable[(l0<<16)|(l1<<8)|l2] = prevp;
+		prevp = ftello(fd) >> ALIGNB_LOG2;
 	}
 	}
 	}

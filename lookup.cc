@@ -3,6 +3,7 @@
 
 #include <stdio.h>
 #include <gzstream.h>
+#include <gzbuffer.h>
 #include <stdlib.h>
 #include <string>
 #include <map>
@@ -46,32 +47,20 @@ int main(int argc, char ** argv) {
 	uint32_t csize, usize;
 	fread(&csize, 1, 4, fd);
 	fread(&usize, 1, 4, fd);
-	
-	// Read compressed chunk!
-	Bytef * compressed = (Bytef*)malloc(csize);
-	fread(compressed, 1, csize, fd);
 
-	uLongf dlen = usize;
-	Bytef * original = (Bytef*)malloc(dlen);
-	int res = uncompress(original, &dlen, compressed, csize);
-	free(compressed);
+	mgzbuffer readbuf(fd, csize);
 
-	fclose(fd);
-
-	// Process list
-	int p = 0; int ipm = 0;
-	while (p < usize) {
+	int ipm = 0;
+	std::string dom;
+	while (readbuf.getString(dom)) {
 		bool dump = (ipm == ipp[3]);
-		if (original[p] == 0) {
+		if (dom.size() == 0) {
 			// End of this IP
-			p++;
 			ipm++;
 		}
 		else {
-			int l = strlen((char*)&original[p]);
 			if (dump)
-				std::cout << std::string((char*)&original[p]) << std::endl;
-			p += l+1;
+				std::cout << dom << std::endl;
 		}
 	}
 }
