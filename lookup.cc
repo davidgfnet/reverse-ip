@@ -42,6 +42,9 @@ int main(int argc, char ** argv) {
 
 	// Read first 32 bit (compressed size)
 	uint64_t entry = ttable[ipp[0]*256*256 + ipp[1]*256 + ipp[2]];
+	if (entry == 0)
+		return 0;
+
 	entry = entry << ALIGNB_LOG2;
 	fseeko(fd, entry, SEEK_SET);
 	uint32_t csize, usize;
@@ -63,6 +66,8 @@ int main(int argc, char ** argv) {
 				std::cout << dom << std::endl;
 		}
 	}
+
+	return 0;
 }
 
 
