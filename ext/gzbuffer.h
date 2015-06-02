@@ -38,9 +38,14 @@ public:
 
 		while (bufAvail < bufSize && fileoffset < fsize) {
 			char tempbuf[64*1024];
-			int toread = (fsize > sizeof(tempbuf)) ? sizeof(tempbuf) : fsize;
+			int rem = fsize - fileoffset;
+			int toread = (rem > sizeof(tempbuf)) ? sizeof(tempbuf) : rem;
 
-			fread(tempbuf, 1, toread, fd);
+			toread = fread(tempbuf, 1, toread, fd);
+			if (toread < 0) { // Error!
+				fileoffset = fsize;
+				return;
+			}
 			fseek(fd, -toread, SEEK_CUR);
 
 			infstream.avail_in = toread;

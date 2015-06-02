@@ -23,14 +23,14 @@
 
 int main(int argc, char ** argv) {
 	if (argc < 3) {
-		fprintf(stderr, "Usage: %s dbfile IP\n", argv[0]);
+		fprintf(stderr, "Usage:\n");
+		fprintf(stderr, "  %s dbfile IP\n", argv[0]);
+		fprintf(stderr, "  %s dbfile -s\n", argv[0]);
 		exit(0);
 	}
 
 	std::string dbfile = std::string(argv[1]);
 	std::string ip = std::string(argv[2]);
-	unsigned int ipp[4];
-	sscanf(ip.c_str(), "%d.%d.%d.%d", &ipp[0],&ipp[1],&ipp[2],&ipp[3]);
 
 	FILE * fd = fopen(dbfile.c_str(),"rb");
 
@@ -40,30 +40,63 @@ int main(int argc, char ** argv) {
 	ttable = (uint32_t*)malloc(tsize);
 	fread(ttable, 1, tsize, fd);
 
-	// Read first 32 bit (compressed size)
-	uint64_t entry = ttable[ipp[0]*256*256 + ipp[1]*256 + ipp[2]];
-	if (entry == 0)
-		return 0;
+	if (ip == "-s") {
+		for (unsigned i = 0; i < 256*256*256; i++) {
+			uint64_t entry = ttable[i];
+			if (entry == 0) continue;
+			entry = entry << ALIGNB_LOG2;
 
-	entry = entry << ALIGNB_LOG2;
-	fseeko(fd, entry, SEEK_SET);
-	uint32_t csize, usize;
-	fread(&csize, 1, 4, fd);
-	fread(&usize, 1, 4, fd);
+			fseeko(fd, entry, SEEK_SET);
+			uint32_t csize, usize;
+			fread(&csize, 1, 4, fd);
+			fread(&usize, 1, 4, fd);
 
-	mgzbuffer readbuf(fd, csize);
+			mgzbuffer readbuf(fd, csize);
 
-	int ipm = 0;
-	std::string dom;
-	while (readbuf.getString(dom)) {
-		bool dump = (ipm == ipp[3]);
-		if (dom.size() == 0) {
-			// End of this IP
-			ipm++;
+			std::string dom;
+			int ipm = 0; int prev = 0;
+			while (readbuf.getString(dom)) {
+				if (dom.size() == 0) {
+					ipm++;
+					if (prev != 0)
+						std::cout << i/256/256 << "." << ((i/256)&255) << "." << (i&255) 
+							<< "." << ipm << " " << prev << std::endl;
+					prev = 0;
+				}
+				else {
+					prev++;
+				}
+			}
 		}
-		else {
-			if (dump)
-				std::cout << dom << std::endl;
+	}else{
+		unsigned int ipp[4];
+		sscanf(ip.c_str(), "%d.%d.%d.%d", &ipp[0],&ipp[1],&ipp[2],&ipp[3]);
+
+		// Read first 32 bit (compressed size)
+		uint64_t entry = ttable[ipp[0]*256*256 + ipp[1]*256 + ipp[2]];
+		if (entry == 0)
+			return 0;
+
+		entry = entry << ALIGNB_LOG2;
+		fseeko(fd, entry, SEEK_SET);
+		uint32_t csize, usize;
+		fread(&csize, 1, 4, fd);
+		fread(&usize, 1, 4, fd);
+
+		mgzbuffer readbuf(fd, csize);
+
+		int ipm = 0;
+		std::string dom;
+		while (readbuf.getString(dom)) {
+			bool dump = (ipm == ipp[3]);
+			if (dom.size() == 0) {
+				// End of this IP
+				ipm++;
+			}
+			else {
+				if (dump)
+					std::cout << dom << std::endl;
+			}
 		}
 	}
 

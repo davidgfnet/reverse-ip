@@ -5,8 +5,12 @@ OBJS =
 CFLAGS= $(OPTS) #-Wall
 CPPFLAGS=-std=gnu++0x $(CFLAGS)
 
-all:	$(OBJS)
+all:	crawler lookup
+
+crawler:	main.cc
 	$(CPP) $(CPPFLAGS) $(PG) -o crawler $(OBJS) main.cc ext/gzstream.cc  -I ext/ -lz -lcares -lkyotocabinet
+
+lookup:	lookup.cc
 	$(CPP) $(CPPFLAGS) $(PG) -o lookup lookup.cc -I ext/ -lz 
 
 %.o:	%.cc
