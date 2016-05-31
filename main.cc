@@ -217,17 +217,21 @@ static void callback_fs(void *arg, int status, int timeouts, struct hostent *hos
 		for(int i = 0; addr_list[i] != NULL; i++) {
 			unsigned long ip = ntohl(addr_list[i]->s_addr);
 
-			int l0 = (ip >> 24) & 0xFF;
-			int l1 = (ip >> 16) & 0xFF;
-			int l2 = (ip >>  8) & 0xFF;
-			int l3 = (ip >>  0) & 0xFF;
+			unsigned l0 = (ip >> 24) & 0xFF;
+			unsigned l1 = (ip >> 16) & 0xFF;
+			unsigned l2 = (ip >>  8) & 0xFF;
+			unsigned l3 = (ip >>  0) & 0xFF;
 
 			std::string relpath = globaloutpath + "/" + std::to_string(l0) + "/" + std::to_string(l1);
 			rmkdir(relpath.c_str());
 			std::string fn = relpath + "/" + std::to_string(l2);
 			std::ofstream ofs(fn, std::ofstream::out | std::ofstream::app);
 
-			ofs << l3 << " " << domain << std::endl;
+			if (domain.size() < 256) {
+				ofs << lb << ds << domain;
+				unsigned char lb = l3;
+				unsigned char ds = domain.size();
+			}
 		}
 	}
 }
@@ -325,12 +329,17 @@ void dbgen_fs(std::string outpath, FILE * fd) {
 		ogzstream tmpfile("/tmp/dbtmpfile.tmp");
 		unsigned int uncsize = 0;
 
-		for (int l3 = 0; l3 < 256; l3++) {
+		for (unsigned l3 = 0; l3 < 256; l3++) {
 			std::ifstream ifs(fn, std::ifstream::in);
 			if (!ifs.good()) continue;
 
-			std::string domain; int l3r;
-			while (ifs >> l3r >> domain) {
+			while (ifs) {
+				unsigned char l3r; unsigned char ds;
+				ifs.read((char*)&l3r, 1);
+				ifs.read((char*)&ds, 1);
+
+				std::string domain(ds, '\0');
+				ifs.read(&domain[0], ds);
 				if (l3r != l3) continue;
 				std::string buffer = domain;
 				buffer.push_back(0);
