@@ -228,9 +228,9 @@ static void callback_fs(void *arg, int status, int timeouts, struct hostent *hos
 			std::ofstream ofs(fn, std::ofstream::out | std::ofstream::app);
 
 			if (domain.size() < 256) {
-				ofs << lb << ds << domain;
 				unsigned char lb = l3;
 				unsigned char ds = domain.size();
+				ofs << lb << ds << domain;
 			}
 		}
 	}
