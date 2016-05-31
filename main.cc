@@ -17,9 +17,12 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <ares.h>
-#include <kcpolydb.h>
 
+#ifdef KC_SUPPORT
+#include <kcpolydb.h>
 kyotocabinet::PolyDB db;
+#endif
+std::string globaloutpath;
 
 const char * dns_servers[4] = { "209.244.0.3", "209.244.0.4", "8.8.8.8", "8.8.4.4" };
 struct in_addr dns_servers_addr[4];
@@ -29,7 +32,8 @@ int MAX_INFLIGHT = 2000;
 #define ALIGNB      8
 #define ALIGNB_LOG2 3
 
-static void callback(void *arg, int status, int timeouts, struct hostent *host);
+static void callback_kc(void *arg, int status, int timeouts, struct hostent *host);
+static void callback_fs(void *arg, int status, int timeouts, struct hostent *host);
 void dbgen_fs(std::string outpath, FILE * fd);
 void dbgen_kc(FILE * fd);
 
@@ -37,7 +41,8 @@ int main(int argc, char ** argv) {
 	if (argc < 4) {
 		fprintf(stderr, "Usage: %s command (args...)\n", argv[0]);
 		fprintf(stderr, " Commands:\n");
-		fprintf(stderr, "  * crawl domains.gz tmpfile.kct max-inflight\n");
+		fprintf(stderr, "  * crawl-kc domains.gz tmpfile.kct max-inflight\n");
+		fprintf(stderr, "  * crawl-fs domains.gz /tmpdir/ max-inflight\n");
 		fprintf(stderr, "  * generatedb-kc tmpfile.kct out-file.db\n");
 		fprintf(stderr, "  * generatedb-fs /tmppath/ out-file.db\n");
 		exit(0);
@@ -45,14 +50,22 @@ int main(int argc, char ** argv) {
 
 	std::string command = std::string(argv[1]);
 
-	if (command == "crawl") {
-		std::string outpath = std::string(argv[3]);
+	if (command == "crawl-kc" || command == "crawl-fs") {
+		globaloutpath = std::string(argv[3]);
 		MAX_INFLIGHT = std::stoi(argv[4]);
 		std::string domfile = std::string(argv[2]);
+		bool usekc = command == "crawl-kc";
 
-		if (!db.open(outpath, kyotocabinet::PolyDB::OWRITER | kyotocabinet::PolyDB::OCREATE)) {
-			std::cerr << "DB open error: " << db.error().name() << std::endl;
+		if (usekc) {
+			#ifdef KC_SUPPORT
+			if (!db.open(globaloutpath, kyotocabinet::PolyDB::OWRITER | kyotocabinet::PolyDB::OCREATE)) {
+				std::cerr << "DB open error: " << db.error().name() << std::endl;
+				exit(1);
+			}
+			#else
+			std::cerr << "The crawler was not built with KC support!" << std::endl;
 			exit(1);
+			#endif
 		}
 
 		ares_channel channel;
@@ -88,7 +101,7 @@ int main(int argc, char ** argv) {
 			while (fin >> domain) {
 				char * arg = (char*) malloc(domain.size()+1);
 				memcpy(arg, domain.c_str(), domain.size()+1);
-				ares_gethostbyname(channel, domain.c_str(), addr_family, callback, (void*)arg);
+				ares_gethostbyname(channel, domain.c_str(), addr_family, usekc ? callback_kc : callback_fs, (void*)arg);
 				inflight++;
 				if (inflight >= MAX_INFLIGHT)
 				    break;
@@ -112,10 +125,13 @@ int main(int argc, char ** argv) {
 
 		ares_destroy(channel);
 		ares_library_cleanup();
+		#ifdef KC_SUPPORT
 		db.close();
+		#endif
 	}
 	
 	if (command == "generatedb-kc") {
+		#ifdef KC_SUPPORT
 		std::string outpath = std::string(argv[2]);
 		std::string outdb = std::string(argv[3]);
 
@@ -128,8 +144,11 @@ int main(int argc, char ** argv) {
 		FILE * fd = fopen(outdb.c_str(),"wb");
 		dbgen_kc(fd);
 		fclose(fd);
-
 		db.close();
+		#else
+		std::cerr << "The crawler was not built with KC support!" << std::endl;
+		exit(1);
+		#endif
 	}
 	if (command == "generatedb-fs") {
 		std::string outpath = std::string(argv[2]);
@@ -139,8 +158,6 @@ int main(int argc, char ** argv) {
 		FILE * fd = fopen(outdb.c_str(),"wb");
 		dbgen_fs(outpath, fd);
 		fclose(fd);
-
-		db.close();
 	}
 
 }
@@ -163,7 +180,8 @@ static void rmkdir(const char *dir) {
     mkdir(tmp, S_IRWXU);
 }
 
-static void callback(void *arg, int status, int timeouts, struct hostent *host) {
+static void callback_kc(void *arg, int status, int timeouts, struct hostent *host) {
+	#ifdef KC_SUPPORT
 	inflight--;
 	std::string domarg = std::string((char*)arg);
 	free(arg);
@@ -183,11 +201,42 @@ static void callback(void *arg, int status, int timeouts, struct hostent *host) 
 			db.set(ipkey, value);
 		}
 	}
+	#endif
 }
+
+static void callback_fs(void *arg, int status, int timeouts, struct hostent *host) {
+	inflight--;
+	std::string domarg = std::string((char*)arg);
+	free(arg);
+
+	if (status == ARES_SUCCESS) {
+		std::string domain = domarg;
+		if (host->h_addr == 0) return;
+
+		struct in_addr **addr_list = (struct in_addr **) host->h_addr_list;
+		for(int i = 0; addr_list[i] != NULL; i++) {
+			unsigned long ip = ntohl(addr_list[i]->s_addr);
+
+			int l0 = (ip >> 24) & 0xFF;
+			int l1 = (ip >> 16) & 0xFF;
+			int l2 = (ip >>  8) & 0xFF;
+			int l3 = (ip >>  0) & 0xFF;
+
+			std::string relpath = globaloutpath + "/" + std::to_string(l0) + "/" + std::to_string(l1);
+			rmkdir(relpath.c_str());
+			std::string fn = relpath + "/" + std::to_string(l2);
+			std::ofstream ofs(fn, std::ofstream::out | std::ofstream::app);
+
+			ofs << l3 << " " << domain << std::endl;
+		}
+	}
+}
+
 
 uint32_t * ttable = 0;
 
 void dbgen_kc(FILE * fd) {
+	#ifdef KC_SUPPORT
 	// Generate the database
 	unsigned int tsize = 256*256*256*sizeof(uint32_t);
 	ttable = (uint32_t*)malloc(tsize);
@@ -248,6 +297,7 @@ void dbgen_kc(FILE * fd) {
 	fwrite(ttable, 1, tsize, fd);
 
 	free(ttable);
+	#endif
 }
 
 void dbgen_fs(std::string outpath, FILE * fd) {
