@@ -57,11 +57,11 @@ int main(int argc, char ** argv) {
 			int ipm = 0; int prev = 0;
 			while (readbuf.getString(dom)) {
 				if (dom.size() == 0) {
-					ipm++;
 					if (prev != 0)
 						std::cout << i/256/256 << "." << ((i/256)&255) << "." << (i&255) 
 							<< "." << ipm << " " << prev << std::endl;
 					prev = 0;
+					ipm++;
 				}
 				else {
 					prev++;

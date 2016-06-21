@@ -12,11 +12,14 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sstream>
+#include <time.h>
 
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <ares.h>
+
+#include "dns_servers.h"
 
 #ifdef KC_SUPPORT
 #include <kcpolydb.h>
@@ -24,8 +27,8 @@ kyotocabinet::PolyDB db;
 #endif
 std::string globaloutpath;
 
-const char * dns_servers[4] = { "209.244.0.3", "209.244.0.4", "8.8.8.8", "8.8.4.4" };
-struct in_addr dns_servers_addr[4];
+struct ares_addr_node dns_servers_list[sizeof(dns_servers)/sizeof(dns_servers[0])];
+
 int inflight = 0;
 int MAX_INFLIGHT = 2000;
 
@@ -79,26 +82,45 @@ int main(int argc, char ** argv) {
 			return 1;
 		}
 
-		addr_family = AF_INET;
 		struct ares_options a_opt;
 		memset(&a_opt,0,sizeof(a_opt));
 		a_opt.tries = 1;
-		a_opt.nservers = sizeof(dns_servers)/sizeof(dns_servers[0]);
-		a_opt.servers = &dns_servers_addr[0];
-		for (int i = 0; i < a_opt.nservers; i++)
-			inet_aton(dns_servers[i], &dns_servers_addr[i]);
+		a_opt.timeout = 10*1000;
 
-		status = ares_init_options(&channel, &a_opt, ARES_OPT_TRIES | ARES_OPT_SERVERS | ARES_OPT_ROTATE);
+		status = ares_init_options(&channel, &a_opt, ARES_OPT_TRIES | ARES_OPT_ROTATE | ARES_OPT_TIMEOUTMS);
 		if (status != ARES_SUCCESS) {
 			fprintf(stderr, "ares_init: %s\n", ares_strerror(status));
 			return 1;
 		}
 
+		// Init servers (mix of IPv4 and IPv6, thus use ares_set_servers
+		const unsigned num_servers = sizeof(dns_servers)/sizeof(dns_servers[0]);
+		for (unsigned i = 0; i < num_servers; i++) {
+			if (strchr(dns_servers[i], '.') == NULL) {
+				dns_servers_list[i].family = AF_INET6;
+				inet_pton(AF_INET6, dns_servers[i], &dns_servers_list[i].addr.addr6);
+			} else {
+				dns_servers_list[i].family = AF_INET;
+				inet_pton(AF_INET, dns_servers[i], &dns_servers_list[i].addr.addr4);
+			}
+			dns_servers_list[i].next = &dns_servers_list[i+1];
+		}
+		dns_servers_list[num_servers-1].next = NULL;
+
+		int ss_status = ares_set_servers(channel, dns_servers_list);
+		if (ss_status != ARES_SUCCESS) {
+			fprintf(stderr, "ares_set_servers: %s\n", ares_strerror(ss_status));
+			return 1;
+		}
+
+		time_t prevt = time(0);
+		unsigned readdom = 0;
 		std::cout << "Reading domains and resolving IPs..." << std::endl;
 		igzstream fin (domfile.c_str());
 		while (1) {
 			std::string domain;
 			while (fin >> domain) {
+				readdom++;
 				char * arg = (char*) malloc(domain.size()+1);
 				memcpy(arg, domain.c_str(), domain.size()+1);
 				ares_gethostbyname(channel, domain.c_str(), addr_family, usekc ? callback_kc : callback_fs, (void*)arg);
@@ -121,6 +143,12 @@ int main(int argc, char ** argv) {
 			// Exit if we are done
 			if (inflight == 0 && fin.eof())
 				break;
+
+			// Update stdout
+			if (time(0) != prevt) {
+				std::cout << "Processed " << readdom << " domains so far ...\r" << std::flush;
+				prevt = time(0);
+			}
 		}
 
 		ares_destroy(channel);
