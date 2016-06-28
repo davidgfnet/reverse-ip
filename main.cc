@@ -245,10 +245,11 @@ static void callback_fs(void *arg, int status, int timeouts, struct hostent *hos
 		for(int i = 0; addr_list[i] != NULL; i++) {
 			unsigned long ip = ntohl(addr_list[i]->s_addr);
 
-			unsigned l0 = (ip >> 24) & 0xFF;
-			unsigned l1 = (ip >> 16) & 0xFF;
-			unsigned l2 = (ip >>  8) & 0xFF;
-			unsigned l3 = (ip >>  0) & 0xFF;
+			// Create dir structure, we limit the i-nodes to 1M aprox
+			unsigned l0 = (ip >> 25) & 0x07F; //  7 bit
+			unsigned l1 = (ip >> 19) & 0x03F; //  6 bit
+			unsigned l2 = (ip >> 12) & 0x07F; //  7 bit
+			unsigned l3 = (ip >>  0) & 0xFFF; // 12 bit
 
 			std::string relpath = globaloutpath + "/" + std::to_string(l0) + "/" + std::to_string(l1);
 			rmkdir(relpath.c_str());
@@ -256,9 +257,10 @@ static void callback_fs(void *arg, int status, int timeouts, struct hostent *hos
 			std::ofstream ofs(fn, std::ofstream::out | std::ofstream::app);
 
 			if (domain.size() < 256) {
-				unsigned char lb = l3;
+				unsigned char lb_hi = (l3 >> 8) & 0xFF;
+				unsigned char lb_lo = l3 & 0xFF;
 				unsigned char ds = domain.size();
-				ofs << lb << ds << domain;
+				ofs << lb_lo << lb_hi << ds << domain;
 			}
 		}
 	}
@@ -344,9 +346,12 @@ void dbgen_fs(std::string outpath, FILE * fd) {
 	uint32_t prevp = ftello(fd) >> ALIGNB_LOG2;
 
 	// For each DB level:
-	for (int l0 = 0; l0 < 256; l0++) {
-	for (int l1 = 0; l1 < 256; l1++) {
-	for (int l2 = 0; l2 < 256; l2++) {
+	for (unsigned ol = 0; ol < 256*256*256; ol++) {
+
+		unsigned l0 = (ol >> 17) & 0x7F;
+		unsigned l1 = (ol >> 11) & 0x3F;
+		unsigned l2 = (ol >>  4) & 0x7F;
+		unsigned l3hi = ol & 0xF;
 
 		std::string fn = outpath + "/" + std::to_string(l0) + "/" + std::to_string(l1) + "/" + std::to_string(l2);
 		{
@@ -358,17 +363,20 @@ void dbgen_fs(std::string outpath, FILE * fd) {
 		unsigned int uncsize = 0;
 
 		for (unsigned l3 = 0; l3 < 256; l3++) {
+			unsigned full_l3 = (l3hi << 8) | l3;
+
 			std::ifstream ifs(fn, std::ifstream::in);
 			if (!ifs.good()) continue;
 
 			while (ifs) {
-				unsigned char l3r; unsigned char ds;
-				ifs.read((char*)&l3r, 1);
+				// Rely on little endianess being used!
+				unsigned short l3r; unsigned char ds;
+				ifs.read((char*)&l3r, 2);
 				ifs.read((char*)&ds, 1);
 
 				std::string domain(ds, '\0');
 				ifs.read(&domain[0], ds);
-				if (l3r != l3) continue;
+				if (l3r != full_l3) continue;
 				std::string buffer = domain;
 				buffer.push_back(0);
 				tmpfile << buffer;
@@ -403,10 +411,8 @@ void dbgen_fs(std::string outpath, FILE * fd) {
 		while (ftello(fd) % ALIGNB != 0)
 			fseek(fd, 1, SEEK_CUR);
 
-		ttable[(l0<<16)|(l1<<8)|l2] = prevp;
+		ttable[ol] = prevp;
 		prevp = ftello(fd) >> ALIGNB_LOG2;
-	}
-	}
 	}
 
 	// Update index
