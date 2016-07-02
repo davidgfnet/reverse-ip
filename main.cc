@@ -252,7 +252,11 @@ static void callback_fs(void *arg, int status, int timeouts, struct hostent *hos
 			unsigned l3 = (ip >>  0) & 0xFFF; // 12 bit
 
 			std::string relpath = globaloutpath + "/" + std::to_string(l0) + "/" + std::to_string(l1);
-			rmkdir(relpath.c_str());
+			static unsigned long ctable[8192/sizeof(unsigned long)];
+			if (!(ctable[(ip >> 22)&0x3FF] & (1<<((ip >> 19)&0x7))))
+				rmkdir(relpath.c_str());
+			ctable[(ip >> 22)&0x3FF] |= (1<<((ip >> 19)&0x7));
+
 			std::string fn = relpath + "/" + std::to_string(l2);
 			std::ofstream ofs(fn, std::ofstream::out | std::ofstream::app);
 
