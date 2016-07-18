@@ -35,6 +35,8 @@ int MAX_INFLIGHT = 2000;
 #define ALIGNB      8
 #define ALIGNB_LOG2 3
 
+#define MAX_FILE_MEM   (128*1024*1024)  // Can use up to 128MB in scratch memory to speed up DB generation
+
 static void callback_kc(void *arg, int status, int timeouts, struct hostent *host);
 static void callback_fs(void *arg, int status, int timeouts, struct hostent *host);
 void dbgen_fs(std::string outpath, FILE * fd);
@@ -349,28 +351,27 @@ void dbgen_fs(std::string outpath, FILE * fd) {
 
 	uint32_t prevp = ftello(fd) >> ALIGNB_LOG2;
 
+	std::string tmp_file = "/tmp/dbtmpfile.tmp" + std::to_string(getpid());
+
 	// For each DB level:
-	for (unsigned ol = 0; ol < 256*256*256; ol++) {
+	for (unsigned ol = 0; ol < 256*256*256; ol += 16) {
 
 		unsigned l0 = (ol >> 17) & 0x7F;
 		unsigned l1 = (ol >> 11) & 0x3F;
 		unsigned l2 = (ol >>  4) & 0x7F;
-		unsigned l3hi = ol & 0xF;
 
+		unsigned long fsize = 0;
 		std::string fn = outpath + "/" + std::to_string(l0) + "/" + std::to_string(l1) + "/" + std::to_string(l2);
 		{
 			std::ifstream ifs(fn, std::ifstream::in);
 			if (!ifs.good()) continue;
+			fsize = ifs.tellg(); 
 		}
 
-		ogzstream tmpfile("/tmp/dbtmpfile.tmp");
-		unsigned int uncsize = 0;
-
-		for (unsigned l3 = 0; l3 < 256; l3++) {
-			unsigned full_l3 = (l3hi << 8) | l3;
-
+		// Optimization: if the file is small, load it entirely into memory
+		std::vector < std::string > domsrc(16*256);
+		if (fsize <= MAX_FILE_MEM) {
 			std::ifstream ifs(fn, std::ifstream::in);
-			if (!ifs.good()) continue;
 
 			while (ifs) {
 				// Rely on little endianess being used!
@@ -380,43 +381,76 @@ void dbgen_fs(std::string outpath, FILE * fd) {
 
 				std::string domain(ds, '\0');
 				ifs.read(&domain[0], ds);
-				if (l3r != full_l3) continue;
-				std::string buffer = domain;
-				buffer.push_back(0);
-				tmpfile << buffer;
-				uncsize += buffer.size();
-			}
-			{
-				std::string buffer;
-				buffer.push_back(0);
-				tmpfile << buffer;
-				uncsize++;
+
+				domsrc[l3r] += domain;
+				domsrc[l3r].push_back('\0');
 			}
 		}
-		tmpfile.close();
 
-		FILE * tmpf = fopen("/tmp/dbtmpfile.tmp", "rb");
-		fseek(tmpf, 0, SEEK_END);
-		unsigned int compressed_size = ftello(tmpf);
-		fseek(tmpf, 0, SEEK_SET);
+		for (unsigned l3hi = 0; l3hi < 16; l3hi++) {
+			ogzstream tmpfile(tmp_file.c_str());
+			unsigned int uncsize = 0;
 
-		fwrite((char*)&compressed_size, 1, 4, fd);
-		fwrite((char*)&uncsize, 1, 4, fd);
+			for (unsigned l3 = 0; l3 < 256; l3++) {
+				unsigned full_l3 = (l3hi << 8) | l3;
 
-		while (compressed_size > 0) {
-			char tbuf[512*1024];
-			unsigned int tocopy = compressed_size > sizeof(tbuf) ? sizeof(tbuf) : compressed_size;
-			fread (tbuf, 1, tocopy, tmpf);
-			fwrite(tbuf, 1, tocopy, fd);
+				if (fsize > MAX_FILE_MEM) {
+					std::ifstream ifs(fn, std::ifstream::in);
+					if (!ifs.good()) continue;
 
-			compressed_size -= tocopy;
+					while (ifs) {
+						// Rely on little endianess being used!
+						unsigned short l3r; unsigned char ds;
+						ifs.read((char*)&l3r, 2);
+						ifs.read((char*)&ds, 1);
+
+						std::string domain(ds, '\0');
+						ifs.read(&domain[0], ds);
+						if (l3r != full_l3) continue;
+						std::string buffer = domain;
+						buffer.push_back(0);
+						tmpfile << buffer;
+						uncsize += buffer.size();
+					}
+					{
+						std::string buffer;
+						buffer.push_back(0);
+						tmpfile << buffer;
+						uncsize++;
+					}
+				}else{
+					tmpfile << domsrc[full_l3];
+					uncsize += domsrc[full_l3].size();
+					tmpfile << '\0';
+					uncsize += 1;
+					domsrc[full_l3] = "";
+				}
+			}
+			tmpfile.close();
+
+			FILE * tmpf = fopen(tmp_file.c_str(), "rb");
+			fseek(tmpf, 0, SEEK_END);
+			unsigned int compressed_size = ftello(tmpf);
+			fseek(tmpf, 0, SEEK_SET);
+
+			fwrite((char*)&compressed_size, 1, 4, fd);
+			fwrite((char*)&uncsize, 1, 4, fd);
+
+			while (compressed_size > 0) {
+				char tbuf[512*1024];
+				unsigned int tocopy = compressed_size > sizeof(tbuf) ? sizeof(tbuf) : compressed_size;
+				fread (tbuf, 1, tocopy, tmpf);
+				fwrite(tbuf, 1, tocopy, fd);
+
+				compressed_size -= tocopy;
+			}
+			fclose(tmpf);
+			while (ftello(fd) % ALIGNB != 0)
+				fseek(fd, 1, SEEK_CUR);
+
+			ttable[ol | l3hi] = prevp;
+			prevp = ftello(fd) >> ALIGNB_LOG2;
 		}
-		fclose(tmpf);
-		while (ftello(fd) % ALIGNB != 0)
-			fseek(fd, 1, SEEK_CUR);
-
-		ttable[ol] = prevp;
-		prevp = ftello(fd) >> ALIGNB_LOG2;
 	}
 
 	// Update index
@@ -424,6 +458,9 @@ void dbgen_fs(std::string outpath, FILE * fd) {
 	fwrite(ttable, 1, tsize, fd);
 
 	free(ttable);
+
+	// Cleanup!
+	unlink(tmp_file.c_str());
 }
 
 
