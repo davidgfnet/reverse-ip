@@ -7,7 +7,9 @@
 #include <string>
 #include <map>
 #include <vector>
+#include <unordered_map>
 #include <string.h>
+#include <assert.h>
 #include <signal.h>
 #include <unistd.h>
 #include <sys/stat.h>
@@ -26,11 +28,16 @@
 kyotocabinet::PolyDB db;
 #endif
 std::string globaloutpath;
+std::unordered_map < std::string, std::pair <uint32_t, uint32_t> > domain_ext;
+uint32_t domain_len_dist[65] = {0};
+uint32_t early_discarded = 0;
 
 struct ares_addr_node dns_servers_list[sizeof(dns_servers)/sizeof(dns_servers[0])];
 
 int inflight = 0;
 int MAX_INFLIGHT = 2000;
+
+enum SectionType { IP_Table = 1, Domain_Summary = 2, IP_Summary = 3 };
 
 #define ALIGNB      8
 #define ALIGNB_LOG2 3
@@ -41,6 +48,16 @@ static void callback_kc(void *arg, int status, int timeouts, struct hostent *hos
 static void callback_fs(void *arg, int status, int timeouts, struct hostent *host);
 void dbgen_fs(std::string outpath, FILE * fd);
 void dbgen_kc(FILE * fd);
+
+std::string getext(const std::string dom) {
+	auto p = dom.rfind('.');
+	return dom.substr(p+1);
+}
+
+std::string getdname(const std::string dom) {
+	auto p = dom.find('.');
+	return dom.substr(0, p);
+}
 
 int main(int argc, char ** argv) {
 	if (argc < 4) {
@@ -122,7 +139,26 @@ int main(int argc, char ** argv) {
 		while (1) {
 			std::string domain;
 			while (fin >> domain) {
+				// Check for proper domains
+				std::string domain_name = getdname(domain);
+
+				if (domain.find('.') == std::string::npos ||
+				    domain_name.size() > 64) {
+
+					early_discarded++;
+
+					continue; // Malformed domain name!
+				}
+
+				// Process input domains
 				readdom++;
+				std::string dext = getext(domain);
+				if (domain_ext.find(dext) == domain_ext.end())
+					domain_ext[dext] = std::make_pair(0,0);
+
+				domain_ext[dext].first++;
+				domain_len_dist[domain_name.size()]++;
+
 				char * arg = (char*) malloc(domain.size()+1);
 				memcpy(arg, domain.c_str(), domain.size()+1);
 				ares_gethostbyname(channel, domain.c_str(), addr_family, usekc ? callback_kc : callback_fs, (void*)arg);
@@ -158,6 +194,35 @@ int main(int argc, char ** argv) {
 		#ifdef KC_SUPPORT
 		db.close();
 		#endif
+
+		// Generate the domain summary stats file
+		std::map < std::string, std::pair <uint32_t, uint32_t> > dsum;
+		uint32_t numdomscrawled = 0, numdomsgood = 0;
+		for (auto kv : domain_ext) {
+			dsum[kv.first] = kv.second;
+			numdomscrawled += kv.second.first;
+			numdomsgood += kv.second.second;
+		}
+
+		FILE * fd = fopen((globaloutpath + "/domainsummary.bin").c_str(), "wb");
+		fwrite(&early_discarded, 1, 4, fd);
+
+		fwrite(&numdomscrawled, 1, 4, fd);
+		fwrite(&numdomsgood, 1, 4, fd);
+
+		uint32_t numext = dsum.size();
+		fwrite(&numext, 1, 4, fd);
+		for (auto kv : dsum) {
+			char ext[64] = {0};
+			memcpy(ext, kv.first.c_str(), kv.first.size() >= 64 ? 64 : kv.first.size());
+			fwrite(ext, 1, 64, fd);
+			fwrite(&kv.second.first, 1, 4, fd);
+			fwrite(&kv.second.second, 1, 4, fd);
+		}
+
+		fwrite(&domain_len_dist[0], 1, 4 * 65, fd);
+
+		fclose(fd);
 	}
 	
 	if (command == "generatedb-kc") {
@@ -220,6 +285,10 @@ static void callback_kc(void *arg, int status, int timeouts, struct hostent *hos
 		std::string domain = domarg;
 		if (host->h_addr == 0) return;
 
+		std::string dext = getext(domain);
+		assert(domain_ext.find(dext) != domain_ext.end());
+		domain_ext[dext].second++;
+
 		struct in_addr **addr_list = (struct in_addr **) host->h_addr_list;
 		for(int i = 0; addr_list[i] != NULL; i++) {
 			uint32_t ip = (addr_list[i]->s_addr);  // ntohl
@@ -242,6 +311,10 @@ static void callback_fs(void *arg, int status, int timeouts, struct hostent *hos
 	if (status == ARES_SUCCESS) {
 		std::string domain = domarg;
 		if (host->h_addr == 0) return;
+
+		std::string dext = getext(domain);
+		assert(domain_ext.find(dext) != domain_ext.end());
+		domain_ext[dext].second++;
 
 		struct in_addr **addr_list = (struct in_addr **) host->h_addr_list;
 		for(int i = 0; addr_list[i] != NULL; i++) {
@@ -272,6 +345,47 @@ static void callback_fs(void *arg, int status, int timeouts, struct hostent *hos
 	}
 }
 
+void write_header(FILE * fd) {
+	// Header bytes: R3RZ
+	fwrite("R3RZ", 1, 4, fd);
+	
+	// Write file index: for now we have table & domain summary
+	unsigned indexs = 4 + (2+1)*8;                      // Size of header
+	indexs = ((indexs + ALIGNB - 1) / ALIGNB) * ALIGNB; // Rounded to align size
+
+	uint32_t ipt_offset  = indexs / ALIGNB;                            // Table after header
+	uint32_t dsum_offset = ipt_offset + (1024*1024*16 * 4) / ALIGNB;   // Summary after table (2^24 32 bit entries)
+
+	uint32_t ip_table[2]       = { IP_Table,       ipt_offset };
+	uint32_t domain_summary[2] = { Domain_Summary, dsum_offset };
+
+	fwrite(ip_table,       1, 8, fd);
+	fwrite(domain_summary, 1, 8, fd);
+
+	// Write empty section (all zeros) + padding
+	for (unsigned i = 0; i < indexs - 4 - 8 - 8; i++)
+		fputc(0, fd);
+}
+
+void write_sections(std::string outpath, FILE * fd) {
+	FILE * f1 = fopen((outpath + "/domainsummary.bin").c_str(), "rb");
+	fseek(f1, 0, SEEK_END);
+	unsigned int fsize = ftello(f1);
+	fseek(f1, 0, SEEK_SET);
+
+	while (1) {
+		char tmp[256*1024];
+		int r = fread(tmp, 1, sizeof(tmp), f1);
+		if (r <= 0)
+			break;
+		fwrite(tmp, 1, r, fd);
+	}
+
+	while (ftello(fd) % ALIGNB != 0)
+		fseek(fd, 1, SEEK_CUR);
+
+	fclose(f1);
+}
 
 uint32_t * ttable = 0;
 
@@ -282,8 +396,13 @@ void dbgen_kc(FILE * fd) {
 	ttable = (uint32_t*)malloc(tsize);
 	memset(ttable, 0, tsize);
 
+	write_header(fd);
+
 	// Reserve the size for the index and we'll fill it as we go
 	fwrite(ttable, 1, tsize, fd);
+
+	// FIXME
+	// write_sections(fd);
 
 	// For each DB level:
 	for (int l0 = 0; l0 < 256; l0++) {
@@ -346,8 +465,14 @@ void dbgen_fs(std::string outpath, FILE * fd) {
 	ttable = (uint32_t*)malloc(tsize);
 	memset(ttable, 0, tsize);
 
+	write_header(fd);
+
+	off_t table_offset = ftello(fd);
+
 	// Reserve the size for the index and we'll fill it as we go
 	fwrite(ttable, 1, tsize, fd);
+
+	write_sections(outpath, fd);
 
 	uint32_t prevp = ftello(fd) >> ALIGNB_LOG2;
 
@@ -454,7 +579,7 @@ void dbgen_fs(std::string outpath, FILE * fd) {
 	}
 
 	// Update index
-	fseeko(fd, 0, SEEK_SET);
+	fseeko(fd, table_offset, SEEK_SET);
 	fwrite(ttable, 1, tsize, fd);
 
 	free(ttable);

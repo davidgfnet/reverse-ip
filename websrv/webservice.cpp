@@ -62,19 +62,50 @@ public:
 		while (url.size() && url[0] == '/')
 			url = url.substr(1);
 
-		unsigned int ipf[4];
-		int m = sscanf(url.c_str(), "%3u.%3u.%3u.%3u", &ipf[0],&ipf[1],&ipf[2],&ipf[3]);
+		if (url == "summary") {
+			FILE* fd = fopen(filename.c_str(), "rb");
+			if (fd) {
+				dbfile_summary sum;
+				if (DBReader::getSummary(fd, sum)) {
+					// Return a JSON encoded summary of the domains crawled!
+					std::string dist;
+					for (auto kv: sum.ext_dist)
+						dist += "  \"" + kv.first + "\": { \"crawled\": " + std::to_string(kv.second.first) + 
+							", \"resolved\": " + std::to_string(kv.second.second) + "},\n";
+					dist = dist.substr(0, dist.size() - 2) + "\n";
 
-		if (m != 4 || ipf[0] > 255 || ipf[1] > 255 || ipf[2] > 255 || ipf[3] > 255)
+					std::string hist;
+					for (unsigned i = 0; i < 65; i++)
+						hist += "," + std::to_string(sum.length_histogram[i]);
+					hist = hist.substr(1);
+
+					std::string ret = "{\n"
+						" \"early_discarded_domains\": " + std::to_string(sum.early_discarded) + ",\n"
+						" \"total_domains_crawled\": " + std::to_string(sum.domains_crawled) + ",\n"
+						" \"total_domains_resolved\": " + std::to_string(sum.domains_good) + ",\n"
+						" \"domain_extension_distribution\": {\n" + dist + " },\n"
+						" \"domain_length_histogram\": [" + hist + "]\n"
+						"}\n";
+					return req.respond("application/json", ret);
+				}
+			}
 			return req.respond_not_found();
+		}
+		else {
+			unsigned int ipf[4];
+			int m = sscanf(url.c_str(), "%3u.%3u.%3u.%3u", &ipf[0],&ipf[1],&ipf[2],&ipf[3]);
 
-		uint32_t ip = (ipf[0]<<24) | (ipf[1]<<16) | (ipf[2]<<8) | (ipf[3]);
+			if (m != 4 || ipf[0] > 255 || ipf[1] > 255 || ipf[2] > 255 || ipf[3] > 255)
+				return req.respond_not_found();
 
-		FILE* fd = fopen(filename.c_str(), "rb");
-		if (fd)
-			return req.respond("application/json", new iprev_generator(ip, fd));
+			uint32_t ip = (ipf[0]<<24) | (ipf[1]<<16) | (ipf[2]<<8) | (ipf[3]);
 
-		return req.respond_not_found();
+			FILE* fd = fopen(filename.c_str(), "rb");
+			if (fd)
+				return req.respond("application/json", new iprev_generator(ip, fd));
+
+			return req.respond_not_found();
+		}
 	}
 
 private:
@@ -97,7 +128,7 @@ int main(int argc, char* argv[]) {
 	server.set_threads(threads);
 
 	ReverseIPService service(dbfile);
-	if (!server.start(&service, port)) {
+	if (!server.start(&service, port, false)) {
 		fprintf(stderr, "Cannot start REST server!\n");
 		return 1;
 	}

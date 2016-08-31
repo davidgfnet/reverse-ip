@@ -33,6 +33,32 @@ int main(int argc, char ** argv) {
 	std::string ip = std::string(argv[2]);
 
 	FILE * fd = fopen(dbfile.c_str(),"rb");
+	if (!fd) {
+		fprintf(stderr, "Could not open input file!");
+		exit(1);
+	}
+
+	char head[4];
+	fread(head, 1, 4, fd);
+	if (memcmp(head, "R3RZ", 4) != 0) {
+		fprintf(stderr, "File format mismatch! Wrong header magic");
+		exit(1);
+	}
+
+	while (1) {
+		uint32_t field, fptr;
+		fread(&field, 1, 4, fd);
+		fread(&fptr,  1, 4, fd);
+		if (field == 0) {
+			fprintf(stderr, "IP table not found in file index!");
+			exit(1);
+		}
+		else if (field == 1) {
+			// Seek to table
+			fseeko(fd, ((off_t)fptr) * ALIGNB, SEEK_SET);
+			break;
+		}
+	}
 
 	// Lookup table
 	uint32_t * ttable = 0;
