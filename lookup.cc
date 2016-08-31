@@ -21,16 +21,24 @@
 #define ALIGNB      8
 #define ALIGNB_LOG2 3
 
+bool endsWith(const std::string & s, const std::string & ext) {
+	if (s.size() > ext.size())
+		return strcmp(&s[s.size() - ext.size()], ext.c_str()) == 0 and s[s.size() - ext.size() - 1] == '.';
+	else
+		return false;
+}
+
 int main(int argc, char ** argv) {
 	if (argc < 3) {
 		fprintf(stderr, "Usage:\n");
 		fprintf(stderr, "  %s dbfile IP\n", argv[0]);
-		fprintf(stderr, "  %s dbfile -s\n", argv[0]);
+		fprintf(stderr, "  %s dbfile -s [filter]\n", argv[0]);
 		exit(0);
 	}
 
 	std::string dbfile = std::string(argv[1]);
 	std::string ip = std::string(argv[2]);
+	std::string extf = std::string(argc >= 4 ? argv[3] : "");
 
 	FILE * fd = fopen(dbfile.c_str(),"rb");
 	if (!fd) {
@@ -90,7 +98,8 @@ int main(int argc, char ** argv) {
 					ipm++;
 				}
 				else {
-					prev++;
+					if (!extf.size() or endsWith(dom, extf))
+						prev++;
 				}
 			}
 		}
