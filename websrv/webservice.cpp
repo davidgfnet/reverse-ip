@@ -86,10 +86,13 @@ public:
 						" \"domain_extension_distribution\": {\n" + dist + " },\n"
 						" \"domain_length_histogram\": [" + hist + "]\n"
 						"}\n";
+
+					fclose(fd);
 					return req.respond("application/json", ret);
 				}
+				fclose(fd);
 			}
-			return req.respond_not_found();
+			return req.respond_error("Internal error opening database", 500);
 		}
 		else {
 			unsigned int ipf[4];
@@ -104,7 +107,7 @@ public:
 			if (fd)
 				return req.respond("application/json", new iprev_generator(ip, fd));
 
-			return req.respond_not_found();
+			return req.respond_error("Internal error opening database", 500);
 		}
 	}
 
