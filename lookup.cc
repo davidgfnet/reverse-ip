@@ -18,21 +18,16 @@
 #include <netdb.h>
 #include <ares.h>
 
+#include "websrv/dbreader.h"
+
 #define ALIGNB      8
 #define ALIGNB_LOG2 3
-
-bool endsWith(const std::string & s, const std::string & ext) {
-	if (s.size() > ext.size())
-		return strcmp(&s[s.size() - ext.size()], ext.c_str()) == 0 and s[s.size() - ext.size() - 1] == '.';
-	else
-		return false;
-}
 
 int main(int argc, char ** argv) {
 	if (argc < 3) {
 		fprintf(stderr, "Usage:\n");
+		fprintf(stderr, "  %s dbfile summary\n", argv[0]);
 		fprintf(stderr, "  %s dbfile IP\n", argv[0]);
-		fprintf(stderr, "  %s dbfile -s [filter]\n", argv[0]);
 		exit(0);
 	}
 
@@ -53,87 +48,49 @@ int main(int argc, char ** argv) {
 		exit(1);
 	}
 
-	while (1) {
-		uint32_t field, fptr;
-		fread(&field, 1, 4, fd);
-		fread(&fptr,  1, 4, fd);
-		if (field == 0) {
-			fprintf(stderr, "IP table not found in file index!");
+	if (ip == "summary") {
+		dbfile_summary sum;
+		bool res = DBReader::getSummary(fd, sum);
+
+		if (!res) {
+			fprintf(stderr, "Could not read domain summary table in database file!");
 			exit(1);
 		}
-		else if (field == 1) {
-			// Seek to table
-			fseeko(fd, ((off_t)fptr) * ALIGNB, SEEK_SET);
-			break;
-		}
-	}
 
-	// Lookup table
-	uint32_t * ttable = 0;
-	unsigned int tsize = 256*256*256*sizeof(uint32_t);
-	ttable = (uint32_t*)malloc(tsize);
-	fread(ttable, 1, tsize, fd);
+		std::string dist;
+		for (auto kv: sum.ext_dist)
+			dist += "  \"" + kv.first + "\": { \"crawled\": " +
+			std::to_string(kv.second.first) + ", \"resolved\": " +
+			std::to_string(kv.second.second) + "},\n";
+		dist = dist.substr(0, dist.size() - 2) + "\n";
 
-	if (ip == "-s") {
-		for (unsigned i = 0; i < 256*256*256; i++) {
-			uint64_t entry = ttable[i];
-			if (entry == 0) continue;
-			entry = entry << ALIGNB_LOG2;
+		std::string hist;
+		for (unsigned i = 0; i < 65; i++)
+			hist += "," + std::to_string(sum.length_histogram[i]);
+		hist = hist.substr(1);
 
-			fseeko(fd, entry, SEEK_SET);
-			uint32_t csize, usize;
-			fread(&csize, 1, 4, fd);
-			fread(&usize, 1, 4, fd);
+		std::string ret = "{\n"
+			" \"early_discarded_domains\": " + std::to_string(sum.early_discarded) + ",\n"
+			" \"total_domains_crawled\": " + std::to_string(sum.domains_crawled) + ",\n"
+			" \"total_domains_resolved\": " + std::to_string(sum.domains_good) + ",\n"
+			" \"domain_extension_distribution\": {\n" + dist + " },\n"
+			" \"domain_length_histogram\": [" + hist + "]\n"
+			"}\n";
 
-			mgzbuffer readbuf(fd, csize);
-
-			std::string dom;
-			int ipm = 0; int prev = 0;
-			while (readbuf.getString(dom)) {
-				if (dom.size() == 0) {
-					if (prev != 0)
-						std::cout << i/256/256 << "." << ((i/256)&255) << "." << (i&255) 
-							<< "." << ipm << " " << prev << std::endl;
-					prev = 0;
-					ipm++;
-				}
-				else {
-					if (!extf.size() or endsWith(dom, extf))
-						prev++;
-				}
-			}
-		}
-	}else{
+		std::cout << ret << std::endl;
+	} else {
 		unsigned int ipp[4];
-		sscanf(ip.c_str(), "%d.%d.%d.%d", &ipp[0],&ipp[1],&ipp[2],&ipp[3]);
+		sscanf(ip.c_str(), "%d.%d.%d.%d", &ipp[0], &ipp[1], &ipp[2], &ipp[3]);
 
-		// Read first 32 bit (compressed size)
-		uint64_t entry = ttable[ipp[0]*256*256 + ipp[1]*256 + ipp[2]];
-		if (entry == 0)
-			return 0;
+		uint32_t intip = (ipp[0]<<24) | (ipp[1]<<16) | (ipp[2]<<8) | ipp[3];
+		DBReader dbr(fd, intip);
 
-		entry = entry << ALIGNB_LOG2;
-		fseeko(fd, entry, SEEK_SET);
-		uint32_t csize, usize;
-		fread(&csize, 1, 4, fd);
-		fread(&usize, 1, 4, fd);
-
-		mgzbuffer readbuf(fd, csize);
-
-		int ipm = 0;
 		std::string dom;
-		while (readbuf.getString(dom)) {
-			bool dump = (ipm == ipp[3]);
-			if (dom.size() == 0) {
-				// End of this IP
-				ipm++;
-			}
-			else {
-				if (dump)
-					std::cout << dom << std::endl;
-			}
-		}
+		while (dbr.nextDomain(dom))
+			std::cout << dom << std::endl;
 	}
+
+	fclose(fd);
 
 	return 0;
 }
