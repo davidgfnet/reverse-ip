@@ -27,6 +27,7 @@ int main(int argc, char ** argv) {
 	if (argc < 3) {
 		fprintf(stderr, "Usage:\n");
 		fprintf(stderr, "  %s dbfile summary\n", argv[0]);
+		fprintf(stderr, "  %s dbfile all\n", argv[0]);
 		fprintf(stderr, "  %s dbfile IP\n", argv[0]);
 		exit(0);
 	}
@@ -78,6 +79,18 @@ int main(int argc, char ** argv) {
 			"}\n";
 
 		std::cout << ret << std::endl;
+	} else if (ip == "all") {
+		for (uint32_t ip = 0; ip < 256*256*256; ip++) {
+			DBReader dbr(fd, ip << 8);
+			std::string dom; uint32_t ipout;
+			while (dbr.nextDomainIP(dom, ipout)) {
+				std::cout << dom << " ";
+				std::cout << (ipout >> 24) << ".";
+				std::cout << ((ipout >> 16) & 0xFF) << ".";
+				std::cout << ((ipout >> 8) & 0xFF) << ".";
+				std::cout << (ipout & 0xFF) << std::endl;
+			}
+		}
 	} else {
 		unsigned int ipp[4];
 		sscanf(ip.c_str(), "%d.%d.%d.%d", &ipp[0], &ipp[1], &ipp[2], &ipp[3]);

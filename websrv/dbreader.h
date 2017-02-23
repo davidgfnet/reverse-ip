@@ -46,7 +46,7 @@ public:
 	}
 
 	DBReader(FILE * fd, uint32_t ip)
-		: readbuf(NULL) {
+		: readbuf(NULL), ip(ip & ~0xff) {
 
 		// Seek to table
 		off_t foffset = getTablePtr(fd, 1);
@@ -121,15 +121,36 @@ public:
 			return false;
 
 		bool r = readbuf->getString(domain);
-		if (!domain.size()) {
+		if (!r || !domain.size()) {
 			delete readbuf;
 			readbuf = NULL;
 			return false;
 		}
 		return r;
 	}
+
+	bool nextDomainIP(std::string &domain, uint32_t &oip) {
+		if (!readbuf)
+			return false;
+
+		bool r = readbuf->getString(domain);
+		while (!domain.size() && r) {
+			if ((ip & 0xff) == 0xff) {
+				delete readbuf;
+				readbuf = NULL;
+				return false;
+			}
+			else
+				ip++;
+
+			r = readbuf->getString(domain);
+		}
+		oip = ip;
+		return r;
+	}
 private:
 	mgzbuffer * readbuf;
+	uint32_t ip;
 };
 
 
