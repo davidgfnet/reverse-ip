@@ -79,16 +79,21 @@ int main(int argc, char ** argv) {
 			"}\n";
 
 		std::cout << ret << std::endl;
-	} else if (ip == "all") {
+	} else if (ip == "all" || ip == "allint") {
+		bool printint = (ip == "allint");
 		for (uint32_t ip = 0; ip < 256*256*256; ip++) {
 			DBReader dbr(fd, ip << 8);
 			std::string dom; uint32_t ipout;
 			while (dbr.nextDomainIP(dom, ipout)) {
 				std::cout << dom << " ";
-				std::cout << (ipout >> 24) << ".";
-				std::cout << ((ipout >> 16) & 0xFF) << ".";
-				std::cout << ((ipout >> 8) & 0xFF) << ".";
-				std::cout << (ipout & 0xFF) << std::endl;
+				if (printint) {
+					std::cout << ipout << std::endl;
+				} else {
+					std::cout << (ipout >> 24) << ".";
+					std::cout << ((ipout >> 16) & 0xFF) << ".";
+					std::cout << ((ipout >> 8) & 0xFF) << ".";
+					std::cout << (ipout & 0xFF) << std::endl;
+				}
 			}
 		}
 	} else {
