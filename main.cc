@@ -41,12 +41,13 @@ struct ares_addr_node dns_servers_list[sizeof(dns_servers)/sizeof(dns_servers[0]
 enum WorkMode { mUnknown, mCrawling, mGeneratingDB };
 const std::string WorkModeStr[] = {"Unknown", "DNS Crawling", "Generating DB"};
 std::atomic<unsigned> inflight(0);
+std::atomic<unsigned> domainstocrawl(0);
 std::atomic<unsigned> readdom(0);
 std::atomic<unsigned> resolveddom(0);
 std::atomic<unsigned> resolvedipdom(0);
 std::atomic<unsigned> MAX_INFLIGHT(2000);
 std::atomic<unsigned> workingmode(mUnknown);
-std::atomic<unsigned> approxprogess(0);
+std::atomic<unsigned> approxprogress(0);
 
 enum SectionType { IP_Table = 1, Domain_Summary = 2, IP_Summary = 3 };
 
@@ -66,6 +67,17 @@ std::string getext(const std::string dom) {
 std::string getdname(const std::string dom) {
 	auto p = dom.find('.');
 	return dom.substr(0, p);
+}
+
+off_t filesize(const char * fname) {
+	off_t ret = 0;
+	FILE * tmpf = fopen(fname, "rb");
+	if (tmpf) {
+		fseek(tmpf, 0, SEEK_END);
+		ret = ftello(tmpf);
+		fclose(tmpf);
+	}
+	return ret;
 }
 
 int main(int argc, char ** argv) {
@@ -140,6 +152,14 @@ int main(int argc, char ** argv) {
 			return 1;
 		}
 
+		{
+			std::cout << "Reading input file..." << std::endl;
+			igzstream fin (domfile.c_str());
+			std::string domain;
+			while (fin >> domain)
+				domainstocrawl++;
+		}
+
 		time_t prevt = time(0);
 		std::cout << "Reading domains and resolving IPs..." << std::endl;
 		igzstream fin (domfile.c_str());
@@ -173,6 +193,7 @@ int main(int argc, char ** argv) {
 				if (inflight >= MAX_INFLIGHT)
 				    break;
 			}
+			approxprogress = readdom * 100 / domainstocrawl;
 		
 			/* Wait for queries to complete. */
 			do {
@@ -367,7 +388,7 @@ void dbgen_fs(std::string outpath, FILE * fd) {
 
 	// For each DB level:
 	for (unsigned ol = 0; ol < 256*256*256; ol += 16) {
-		approxprogess = (ol*100 / 256*256*256);
+		approxprogress = (ol*100 / 256*256*256);
 
 		unsigned l0 = (ol >> 17) & 0x7F;
 		unsigned l1 = (ol >> 11) & 0x3F;
@@ -375,11 +396,8 @@ void dbgen_fs(std::string outpath, FILE * fd) {
 
 		unsigned long fsize = 0;
 		std::string fn = outpath + "/" + std::to_string(l0) + "/" + std::to_string(l1) + "/" + std::to_string(l2);
-		{
-			std::ifstream ifs(fn, std::ifstream::in);
-			if (!ifs.good()) continue;
-			fsize = ifs.tellg(); 
-		}
+		fsize = filesize(fn.c_str());
+		if (!fsize) continue;
 
 		// Optimization: if the file is small, load it entirely into memory
 		std::vector < std::string > domsrc(16*256);
@@ -441,10 +459,8 @@ void dbgen_fs(std::string outpath, FILE * fd) {
 			}
 			tmpfile.close();
 
+			unsigned int compressed_size = filesize(tmp_file.c_str());
 			FILE * tmpf = fopen(tmp_file.c_str(), "rb");
-			fseek(tmpf, 0, SEEK_END);
-			unsigned int compressed_size = ftello(tmpf);
-			fseek(tmpf, 0, SEEK_SET);
 
 			fwrite((char*)&compressed_size, 1, 4, fd);
 			fwrite((char*)&uncsize, 1, 4, fd);
@@ -487,13 +503,14 @@ bool StatusService::handle(rest_request& req) {
 		std::string ret = "<html><body>\n"
 			"<h1>ReverseIP Crawler Status Page</h1>\n"
 			"Current status: " + WorkModeStr[workingmode] + "<br/>\n"
-			"Approximate progress: " + std::to_string(approxprogess) + "<br/><br/>\n";
+			"Approximate progress: " + std::to_string(approxprogress) + "%<br/><br/>\n";
 
 		switch (workingmode) {
 		case mCrawling:
 			ret += "<table>"
 			"<tr><td>inflight-requests</td><td>" + std::to_string(inflight) + "</td></tr>\n"
 			"<tr><td>max-inflight-requests</td><td>" + std::to_string(MAX_INFLIGHT) + "</td></tr>\n"
+			"<tr><td>domains-to-crawl</td><td>" + std::to_string(domainstocrawl) + "</td></tr>\n"
 			"<tr><td>processed-domains</td><td>" + std::to_string(readdom) + "</td></tr>\n"
 			"<tr><td>resolved-domains</td><td>" + std::to_string(resolveddom) + "</td></tr>\n"
 			"<tr><td>resolved-domains-ip</td><td>" + std::to_string(resolvedipdom) + "</td></tr>\n"
@@ -508,10 +525,11 @@ bool StatusService::handle(rest_request& req) {
 		std::string ret = "{\n"
 			"  \"working-mode\": "          + std::to_string(workingmode) + ",\n"
 			"  \"working-mode-str\": "      + WorkModeStr[workingmode] + ",\n"
-			"  \"approximate-progress\": "  + std::to_string(approxprogess) + ",\n"
+			"  \"approximate-progress\": "  + std::to_string(approxprogress) + ",\n"
 
 			"  \"inflight-requests\": "     + std::to_string(inflight) + ",\n"
 			"  \"max-inflight-requests\": " + std::to_string(MAX_INFLIGHT) + ",\n"
+			"  \"domains-to-crawl\": "      + std::to_string(domainstocrawl) + ",\n"
 			"  \"processed-domains\": "     + std::to_string(readdom) + ",\n"
 			"  \"resolved-domains\": "      + std::to_string(resolveddom) + ",\n"
 			"  \"resolved-domains-ip\": "   + std::to_string(resolvedipdom) + "\n"
