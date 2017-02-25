@@ -2,13 +2,13 @@
 CPP=g++
 OPTS=-O2 -ggdb
 OBJS = 
-CFLAGS= $(OPTS) #-Wall
+CFLAGS= $(OPTS) -Wall
 CPPFLAGS=-std=gnu++0x $(CFLAGS)
 
 all:	crawler lookup
 
 crawler:	main.cc
-	$(CPP) $(CPPFLAGS) $(PG) -o crawler $(OBJS) main.cc ext/gzstream.cc  -I ext/ -lz -lcares 
+	$(CPP) $(CPPFLAGS) $(PG) -o crawler $(OBJS) main.cc ext/gzstream.cc  -I ext/ -lz -lcares -lcxxhttpserver -lpthread -lgnutls -lgcrypt
 
 crawler_kc:	main.cc
 	$(CPP) $(CPPFLAGS) $(PG) -o crawlerkc $(OBJS) main.cc ext/gzstream.cc  -I ext/ -lz -lcares -lkyotocabinet
