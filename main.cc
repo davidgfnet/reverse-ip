@@ -524,7 +524,7 @@ bool StatusService::handle(rest_request& req) {
 	if (url == "stats") {
 		std::string ret = "{\n"
 			"  \"working-mode\": "          + std::to_string(workingmode) + ",\n"
-			"  \"working-mode-str\": "      + WorkModeStr[workingmode] + ",\n"
+			"  \"working-mode-str\": \""      + WorkModeStr[workingmode] + "\",\n"
 			"  \"approximate-progress\": "  + std::to_string(approxprogress) + ",\n"
 
 			"  \"inflight-requests\": "     + std::to_string(inflight) + ",\n"
