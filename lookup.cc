@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string>
 #include <map>
+#include <set>
 #include <vector>
 #include <string.h>
 #include <signal.h>
@@ -28,6 +29,7 @@ int main(int argc, char ** argv) {
 		fprintf(stderr, "Usage:\n");
 		fprintf(stderr, "  %s dbfile summary\n", argv[0]);
 		fprintf(stderr, "  %s dbfile all\n", argv[0]);
+		fprintf(stderr, "  %s dbfile table-dbg\n", argv[0]);
 		fprintf(stderr, "  %s dbfile IP\n", argv[0]);
 		exit(0);
 	}
@@ -79,6 +81,28 @@ int main(int argc, char ** argv) {
 			"}\n";
 
 		std::cout << ret << std::endl;
+	} else if (ip == "table-dbg") {
+		std::set< std::pair<uint32_t,uint32_t> > top100;
+		uint32_t offset = DBReader::getTablePtr(fd, 1) * ALIGNB;
+		uint32_t prev = 0, prevt = 0;
+		fseeko(fd, offset, SEEK_SET);
+		for (unsigned i = 0; i < 256*256*256; i++) {
+			uint32_t ptr, offset = 0;
+			fread(&ptr, 1, 4, fd);
+			if (ptr != 0) {
+				offset = ptr - prev;
+				if (prevt != 0)
+					top100.insert(std::make_pair(offset*ALIGNB, prevt));
+				prev = ptr;
+				prevt = i;
+			}
+			while (top100.size() > 100)
+				top100.erase(*top100.begin());
+		}
+		for (auto elem: top100)
+			std::cout << (elem.second/256/256) << "."
+		              << ((elem.second/256)&255) << "."
+			          << (elem.second&255) << " " << elem.first << std::endl;
 	} else if (ip == "all" || ip == "allint") {
 		bool printint = (ip == "allint");
 		for (uint32_t ip = 0; ip < 256*256*256; ip++) {

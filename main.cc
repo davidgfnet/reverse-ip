@@ -193,7 +193,7 @@ int main(int argc, char ** argv) {
 				if (inflight >= MAX_INFLIGHT)
 				    break;
 			}
-			approxprogress = readdom * 100 / domainstocrawl;
+			approxprogress = ((uint64_t)readdom * 100) / domainstocrawl;
 		
 			/* Wait for queries to complete. */
 			do {
@@ -388,7 +388,7 @@ void dbgen_fs(std::string outpath, FILE * fd) {
 
 	// For each DB level:
 	for (unsigned ol = 0; ol < 256*256*256; ol += 16) {
-		approxprogress = (ol*100 / 256*256*256);
+		approxprogress = (ol*100 / (256*256*256));
 
 		unsigned l0 = (ol >> 17) & 0x7F;
 		unsigned l1 = (ol >> 11) & 0x3F;
@@ -443,12 +443,8 @@ void dbgen_fs(std::string outpath, FILE * fd) {
 						tmpfile << buffer;
 						uncsize += buffer.size();
 					}
-					{
-						std::string buffer;
-						buffer.push_back(0);
-						tmpfile << buffer;
-						uncsize++;
-					}
+					tmpfile << '\0';
+					uncsize++;
 				}else{
 					tmpfile << domsrc[full_l3];
 					uncsize += domsrc[full_l3].size();
@@ -459,26 +455,29 @@ void dbgen_fs(std::string outpath, FILE * fd) {
 			}
 			tmpfile.close();
 
-			unsigned int compressed_size = filesize(tmp_file.c_str());
-			FILE * tmpf = fopen(tmp_file.c_str(), "rb");
-
-			fwrite((char*)&compressed_size, 1, 4, fd);
-			fwrite((char*)&uncsize, 1, 4, fd);
-
-			while (compressed_size > 0) {
-				char tbuf[512*1024];
-				unsigned int tocopy = compressed_size > sizeof(tbuf) ? sizeof(tbuf) : compressed_size;
-				fread (tbuf, 1, tocopy, tmpf);
-				fwrite(tbuf, 1, tocopy, fd);
-
-				compressed_size -= tocopy;
+			// Do not write 256*'0' cause it's a waste of space and cpu!
+			if (uncsize > 256) {
+				unsigned int compressed_size = filesize(tmp_file.c_str());
+				FILE * tmpf = fopen(tmp_file.c_str(), "rb");
+	
+				fwrite((char*)&compressed_size, 1, 4, fd);
+				fwrite((char*)&uncsize, 1, 4, fd);
+	
+				while (compressed_size > 0) {
+					char tbuf[512*1024];
+					unsigned int tocopy = compressed_size > sizeof(tbuf) ? sizeof(tbuf) : compressed_size;
+					fread (tbuf, 1, tocopy, tmpf);
+					fwrite(tbuf, 1, tocopy, fd);
+	
+					compressed_size -= tocopy;
+				}
+				fclose(tmpf);
+				while (ftello(fd) % ALIGNB != 0)
+					fseek(fd, 1, SEEK_CUR);
+	
+				ttable[ol | l3hi] = prevp;
+				prevp = ftello(fd) >> ALIGNB_LOG2;
 			}
-			fclose(tmpf);
-			while (ftello(fd) % ALIGNB != 0)
-				fseek(fd, 1, SEEK_CUR);
-
-			ttable[ol | l3hi] = prevp;
-			prevp = ftello(fd) >> ALIGNB_LOG2;
 		}
 	}
 
